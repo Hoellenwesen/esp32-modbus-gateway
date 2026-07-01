@@ -1,5 +1,13 @@
 #include "config.h"
 
+static inline uint8_t encodeDataBits(uint8_t value) {
+    return ((value - 5) << 2) & 0xc;
+}
+
+static inline uint8_t encodeStopBits(uint8_t value) {
+    return (value << 4) & 0x30;
+}
+
 Config::Config()
     :_prefs(NULL)
     ,_tcpPort(502)
@@ -10,6 +18,7 @@ Config::Config()
     ,_serialBaudRate(115200)
     ,_serialConfig(SERIAL_8N1)
     ,_webPassword("")
+    ,_dirty(false)
 {}
 
 void Config::begin(Preferences *prefs)
@@ -32,7 +41,7 @@ uint16_t Config::getTcpPort(){
 void Config::setTcpPort(uint16_t value){
     if (_tcpPort == value) return;
     _tcpPort = value;
-    _prefs->putUShort("tcpPort", _tcpPort);
+    _dirty = true;
 }
 
 uint32_t Config::getTcpTimeout(){
@@ -42,21 +51,21 @@ uint32_t Config::getTcpTimeout(){
 void Config::setTcpTimeout(uint32_t value){
     if (_tcpTimeout == value) return;
     _tcpTimeout = value;
-    _prefs->putULong("tcpTimeout", _tcpTimeout);
+    _dirty = true;
 }
 
 uint32_t Config::getModbusConfig(){
     return _modbusConfig;
 }
 
-unsigned long Config::getModbusBaudRate(){
+uint32_t Config::getModbusBaudRate(){
     return _modbusBaudRate;
 }
 
-void Config::setModbusBaudRate(unsigned long value){
+void Config::setModbusBaudRate(uint32_t value){
     if (_modbusBaudRate == value) return;
     _modbusBaudRate = value;
-    _prefs->putULong("modbusBaudRate", _modbusBaudRate);
+    _dirty = true;
 }
 
 uint8_t Config::getModbusDataBits(){
@@ -64,12 +73,10 @@ uint8_t Config::getModbusDataBits(){
 }
 
 void Config::setModbusDataBits(uint8_t value){
-    auto dataBits = getModbusDataBits();
-    value -= 5;
-    value = (value << 2) & 0xc;
-    if (value == dataBits) return;
-    _modbusConfig = (_modbusConfig & 0xfffffff3) | value;
-    _prefs->putULong("modbusConfig", _modbusConfig);
+    uint8_t encoded = encodeDataBits(value);
+    if ((_modbusConfig & 0xc) == encoded) return;
+    _modbusConfig = (_modbusConfig & 0xfffffff3) | encoded;
+    _dirty = true;
 }
 
 uint8_t Config::getModbusParity(){
@@ -77,11 +84,10 @@ uint8_t Config::getModbusParity(){
 }
 
 void Config::setModbusParity(uint8_t value){
-    auto parity = getModbusParity();
-    value = value & 0x3;
-    if (parity == value) return;
+    value &= 0x3;
+    if ((_modbusConfig & 0x3) == value) return;
     _modbusConfig = (_modbusConfig & 0xfffffffc) | value;
-    _prefs->putULong("modbusConfig", _modbusConfig);
+    _dirty = true;
 }
 
 uint8_t Config::getModbusStopBits(){
@@ -89,11 +95,10 @@ uint8_t Config::getModbusStopBits(){
 }
 
 void Config::setModbusStopBits(uint8_t value){
-    auto stopbits = getModbusStopBits();
-    value = (value << 4) & 0x30;
-    if (stopbits == value) return;
-    _modbusConfig = (_modbusConfig & 0xffffffcf) | value;
-    _prefs->putULong("modbusConfig", _modbusConfig);
+    uint8_t encoded = encodeStopBits(value);
+    if ((_modbusConfig & 0x30) == encoded) return;
+    _modbusConfig = (_modbusConfig & 0xffffffcf) | encoded;
+    _dirty = true;
 }
 
 int8_t Config::getModbusRtsPin(){
@@ -103,21 +108,21 @@ int8_t Config::getModbusRtsPin(){
 void Config::setModbusRtsPin(int8_t value){
     if (_modbusRtsPin == value) return;
     _modbusRtsPin = value;
-    _prefs->putChar("modbusRtsPin", _modbusRtsPin);
+    _dirty = true;
 }
 
 uint32_t Config::getSerialConfig(){
     return _serialConfig;
 }
 
-unsigned long Config::getSerialBaudRate(){
+uint32_t Config::getSerialBaudRate(){
     return _serialBaudRate;
 }
 
-void Config::setSerialBaudRate(unsigned long value){
+void Config::setSerialBaudRate(uint32_t value){
     if (_serialBaudRate == value) return;
     _serialBaudRate = value;
-    _prefs->putULong("serialBaudRate", _serialBaudRate);
+    _dirty = true;
 }
 
 uint8_t Config::getSerialDataBits(){
@@ -125,12 +130,10 @@ uint8_t Config::getSerialDataBits(){
 }
 
 void Config::setSerialDataBits(uint8_t value){
-    auto dataBits = getSerialDataBits();
-    value -= 5;
-    value = (value << 2) & 0xc;
-    if (value == dataBits) return;
-    _serialConfig = (_serialConfig & 0xfffffff3) | value;
-    _prefs->putULong("serialConfig", _serialConfig);
+    uint8_t encoded = encodeDataBits(value);
+    if ((_serialConfig & 0xc) == encoded) return;
+    _serialConfig = (_serialConfig & 0xfffffff3) | encoded;
+    _dirty = true;
 }
 
 uint8_t Config::getSerialParity(){
@@ -138,11 +141,10 @@ uint8_t Config::getSerialParity(){
 }
 
 void Config::setSerialParity(uint8_t value){
-    auto parity = getSerialParity();
-    value = value & 0x3;
-    if (parity == value) return;
+    value &= 0x3;
+    if ((_serialConfig & 0x3) == value) return;
     _serialConfig = (_serialConfig & 0xfffffffc) | value;
-    _prefs->putULong("serialConfig", _serialConfig);
+    _dirty = true;
 }
 
 uint8_t Config::getSerialStopBits(){
@@ -150,11 +152,10 @@ uint8_t Config::getSerialStopBits(){
 }
 
 void Config::setSerialStopBits(uint8_t value){
-    auto stopbits = getSerialStopBits();
-    value = (value << 4) & 0x30;
-    if (stopbits == value) return;
-    _serialConfig = (_serialConfig & 0xffffffcf) | value;
-    _prefs->putULong("serialConfig", _serialConfig);
+    uint8_t encoded = encodeStopBits(value);
+    if ((_serialConfig & 0x30) == encoded) return;
+    _serialConfig = (_serialConfig & 0xffffffcf) | encoded;
+    _dirty = true;
 }
 
 
@@ -163,8 +164,20 @@ String Config::getWebPassword(){
 }
 
 void Config::setWebPassword(String value){
-    auto webpass = getWebPassword();
-    if (webpass == value) return;
+    if (_webPassword == value) return;
     _webPassword = value;
+    _dirty = true;
+}
+
+void Config::save() {
+    if (!_prefs || !_dirty) return;
+    _prefs->putUShort("tcpPort", _tcpPort);
+    _prefs->putULong("tcpTimeout", _tcpTimeout);
+    _prefs->putULong("modbusBaudRate", _modbusBaudRate);
+    _prefs->putULong("modbusConfig", _modbusConfig);
+    _prefs->putChar("modbusRtsPin", _modbusRtsPin);
+    _prefs->putULong("serialBaudRate", _serialBaudRate);
+    _prefs->putULong("serialConfig", _serialConfig);
     _prefs->putString("webPassword", _webPassword);
+    _dirty = false;
 }

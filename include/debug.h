@@ -7,9 +7,7 @@
         private:
             Print *_serial;
             AsyncResponseStream *_response;
-            String escapeAmp(String text);
-            String escapeLt(String text);
-            String escape(String buffer, char oldValue, String newValue);
+            String escape(String text, char oldValue, const String& newValue);
         public:
             WebPrint(Print *serial, AsyncResponseStream *reponse);
             size_t write(uint8_t) override;

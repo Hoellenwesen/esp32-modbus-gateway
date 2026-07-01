@@ -1,12 +1,36 @@
 #include "pages.h"
-#define ETAG "\"" __DATE__ "" __TIME__ "\""
+#include <esp_timer.h>
+#include <esp_system.h>
+static String _csrfToken;
+
+static String generateCsrfToken() {
+    uint8_t buf[8];
+    for (int i = 0; i < 8; i++) buf[i] = esp_random() & 0xFF;
+    String token;
+    for (int i = 0; i < 8; i++) {
+        token += "0123456789abcdef"[buf[i] >> 4];
+        token += "0123456789abcdef"[buf[i] & 0x0F];
+    }
+    return token;
+}
+
+static bool validateCsrf(AsyncWebServerRequest *request) {
+    if (!request->hasParam("csrf", true)) return false;
+    return request->getParam("csrf", true)->value() == _csrfToken;
+}
+#define ETAG "\"" __DATE__ "-" __TIME__ "\""
 #define ADMIN_WEB_PASS  \
-        if ((!config->getWebPassword().equals("")) && (!request->authenticate("admin", config->getWebPassword().c_str()))) \
-            return request->requestAuthentication();
+        String _webPass = config->getWebPassword(); \
+        if ((!_webPass.equals("")) && (!request->authenticate("admin", _webPass.c_str()))) { \
+            delay(500); \
+            return request->requestAuthentication(); \
+        }
 #define WEB_PASS_PLACEHOLDER "****"
 
 
-void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *bridge, Config *config, WiFiManager *wm){
+void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *bridge, Config *config, WiFiManager *wm, bool *configChanged){
+  _csrfToken = generateCsrfToken();
+
   server->on("/", HTTP_GET, [config](AsyncWebServerRequest *request){
     
     ADMIN_WEB_PASS;
@@ -20,6 +44,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     sendButton(response, "Firmware update", "update");
     sendButton(response, "WiFi reset", "wifi", "r");
     sendButton(response, "Reboot", "reboot", "r");
+    sendButton(response, "Logout", "logout");
     sendResponseTrailer(response);
     request->send(response);
   });
@@ -35,7 +60,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     // show ESP infos...
     sendTableRow(response, "ESP Uptime (sec)", esp_timer_get_time() / 1000000);
     sendTableRow(response, "ESP SSID", WiFi.SSID());
-    sendTableRow(response, "ESP RSSI", WiFi.RSSI());
+    sendTableRow(response, "ESP RSSI", String(WiFi.RSSI()));
     sendTableRow(response, "ESP WiFi Quality", WiFiQuality(WiFi.RSSI()));
     sendTableRow(response, "ESP MAC", WiFi.macAddress());
     sendTableRow(response, "ESP IP",  WiFi.localIP().toString() );
@@ -62,13 +87,16 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     sendResponseHeader(response, "Really?");
     sendButton(response, "Back", "/");
     response->print("<form method=\"post\">"
+        "<input type=\"hidden\" name=\"csrf\" value=\"");
+    response->print(_csrfToken);
+    response->print("\">"
         "<button class=\"r\">Yes, do it!</button>"
       "</form>");
     sendResponseTrailer(response);
     request->send(response);
   });
   server->on("/reboot", HTTP_POST, [config](AsyncWebServerRequest *request){
-    
+    if (!validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     dbgln("[webserver] POST /reboot");
@@ -91,7 +119,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
           "<label for=\"tp\">TCP Port</label>"
         "</td>"
         "<td>");
-    response->printf("<input type=\"number\" min=\"1\" max=\"65535\" id=\"tp\" name=\"tp\" value=\"%d\">", config->getTcpPort());
+    response->printf("<input type=\"number\" min=\"1\" max=\"65535\" id=\"tp\" name=\"tp\" value=\"%u\">", config->getTcpPort());
     response->print("</td>"
       "</tr>"
       "<tr>"
@@ -99,7 +127,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
           "<label for=\"tt\">TCP Timeout (ms)</label>"
         "</td>"
         "<td>");
-    response->printf("<input type=\"number\" min=\"1\" id=\"tt\" name=\"tt\" value=\"%d\">", config->getTcpTimeout());
+    response->printf("<input type=\"number\" min=\"1\" id=\"tt\" name=\"tt\" value=\"%u\">", config->getTcpTimeout());
     response->print("</td>"
         "</tr>"
         "</table>"
@@ -110,7 +138,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
             "<label for=\"mb\">Baud rate</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"number\" min=\"0\" id=\"mb\" name=\"mb\" value=\"%lu\">", config->getModbusBaudRate());
+    response->printf("<input type=\"number\" min=\"0\" id=\"mb\" name=\"mb\" value=\"%u\">", config->getModbusBaudRate());
     response->print("</td>"
         "</tr>"
         "<tr>"
@@ -176,7 +204,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
             "<label for=\"sb\">Baud rate</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"number\" min=\"0\" id=\"sb\" name=\"sb\" value=\"%lu\">", config->getSerialBaudRate());
+    response->printf("<input type=\"number\" min=\"0\" id=\"sb\" name=\"sb\" value=\"%u\">", config->getSerialBaudRate());
     response->print("</td>"
         "</tr>"
         "<tr>"
@@ -226,51 +254,50 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
         "</table>");
 
     response->print("<button class=\"r\">Save</button>"
+      "<input type=\"hidden\" name=\"csrf\" value=\"");
+    response->print(_csrfToken);
+    response->print("\">"
       "</form>"
       "<p></p>");
     sendButton(response, "Back", "/");
-    response->print("<script>"
-      "(function(){"
-        "var s = document.querySelectorAll('select[data-value]');"
-        "for(d of s){"
-          "d.querySelector(`option[value='${d.dataset.value}']`).selected=true"
-      "}})();"
-      "</script>");
+    sendDropdownScript(response);
     sendResponseTrailer(response);
     request->send(response);
   });
-  server->on("/config", HTTP_POST, [config](AsyncWebServerRequest *request){
-    
+  server->on("/config", HTTP_POST, [config, configChanged](AsyncWebServerRequest *request){
+    if (!validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     dbgln("[webserver] POST /config");
     if (request->hasParam("tp", true)){
-      auto port = request->getParam("tp", true)->value().toInt();
+      auto port = constrain(request->getParam("tp", true)->value().toInt(), 1, 65535);
       config->setTcpPort(port);
       dbgln("[webserver] saved port");
     }
     if (request->hasParam("tt", true)){
-      auto timeout = request->getParam("tt", true)->value().toInt();
+      auto timeout = constrain(request->getParam("tt", true)->value().toInt(), 100, 60000);
       config->setTcpTimeout(timeout);
       dbgln("[webserver] saved timeout");
     }
     if (request->hasParam("mb", true)){
       auto baud = request->getParam("mb", true)->value().toInt();
-      config->setModbusBaudRate(baud);
-      dbgln("[webserver] saved modbus baud rate");
+      if (baud >= 1200) {
+        config->setModbusBaudRate(baud);
+        dbgln("[webserver] saved modbus baud rate");
+      }
     }
     if (request->hasParam("md", true)){
-      auto data = request->getParam("md", true)->value().toInt();
+      auto data = constrain(request->getParam("md", true)->value().toInt(), 5, 8);
       config->setModbusDataBits(data);
       dbgln("[webserver] saved modbus data bits");
     }
     if (request->hasParam("mp", true)){
-      auto parity = request->getParam("mp", true)->value().toInt();
+      auto parity = constrain(request->getParam("mp", true)->value().toInt(), 0, 3);
       config->setModbusParity(parity);
       dbgln("[webserver] saved modbus parity");
     }
     if (request->hasParam("ms", true)){
-      auto stop = request->getParam("ms", true)->value().toInt();
+      auto stop = constrain(request->getParam("ms", true)->value().toInt(), 1, 3);
       config->setModbusStopBits(stop);
       dbgln("[webserver] saved modbus stop bits");
     }
@@ -281,33 +308,37 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     }
     if (request->hasParam("sb", true)){
       auto baud = request->getParam("sb", true)->value().toInt();
-      config->setSerialBaudRate(baud);
-      dbgln("[webserver] saved serial baud rate");
+      if (baud >= 1200) {
+        config->setSerialBaudRate(baud);
+        dbgln("[webserver] saved serial baud rate");
+      }
     }
     if (request->hasParam("sd", true)){
-      auto data = request->getParam("sd", true)->value().toInt();
+      auto data = constrain(request->getParam("sd", true)->value().toInt(), 5, 8);
       config->setSerialDataBits(data);
       dbgln("[webserver] saved serial data bits");
     }
     if (request->hasParam("sp", true)){
-      auto parity = request->getParam("sp", true)->value().toInt();
+      auto parity = constrain(request->getParam("sp", true)->value().toInt(), 0, 3);
       config->setSerialParity(parity);
       dbgln("[webserver] saved serial parity");
     }
     if (request->hasParam("ss", true)){
-      auto stop = request->getParam("ss", true)->value().toInt();
+      auto stop = constrain(request->getParam("ss", true)->value().toInt(), 1, 3);
       config->setSerialStopBits(stop);
       dbgln("[webserver] saved serial stop bits");
     }
     if (request->hasParam("wp", true)){
       String wp = request->getParam("wp", true)->value();
-      if (!wp.equals(WEB_PASS_PLACEHOLDER)) { // if we get default value prefilled in the wp input we're not changing current one
+      if (!wp.equals(WEB_PASS_PLACEHOLDER)) {
         config->setWebPassword(wp);
         dbgln("[webserver] saved web password");
       } else {
         dbgln("[webserver] web password not changed");
       }
     }
+    config->save();
+    *configChanged = true;
     request->redirect("/");    
   });
   server->on("/debug", HTTP_GET, [config](AsyncWebServerRequest *request){
@@ -323,7 +354,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     request->send(response);
   });
   server->on("/debug", HTTP_POST, [rtu, config](AsyncWebServerRequest *request){
-    
+    if (!validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     dbgln("[webserver] POST /debug");
@@ -345,6 +376,33 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     }
     auto *response = request->beginResponseStream("text/html");
     sendResponseHeader(response, "Debug");
+    int funcCode = func.toInt();
+    if (funcCode < 1 || funcCode > 4) {
+      response->print("<p class=\"e\">Invalid function code. Allowed: 1-4 (Read Coils, Read Discrete Inputs, Read Holding Registers, Read Input Registers).</p>");
+      sendDebugForm(response, slaveId, reg, func, count);
+      sendButton(response, "Back", "/");
+      sendResponseTrailer(response);
+      request->send(response);
+      return;
+    }
+    int slaveIdVal = slaveId.toInt();
+    if (slaveIdVal < 1 || slaveIdVal > 247) {
+      response->print("<p class=\"e\">Invalid slave ID. Must be 1-247.</p>");
+      sendDebugForm(response, slaveId, reg, func, count);
+      sendButton(response, "Back", "/");
+      sendResponseTrailer(response);
+      request->send(response);
+      return;
+    }
+    int countVal = count.toInt();
+    if (countVal < 1 || countVal > 125) {
+      response->print("<p class=\"e\">Invalid count. Must be 1-125.</p>");
+      sendDebugForm(response, slaveId, reg, func, count);
+      sendButton(response, "Back", "/");
+      sendResponseTrailer(response);
+      request->send(response);
+      return;
+    }
     response->print("<pre>");
     auto previous = LOGDEVICE;
     auto previousLevel = MBUlogLvl;
@@ -383,6 +441,12 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     response->print("<form method=\"post\" enctype=\"multipart/form-data\">"
       "<input type=\"file\" name=\"file\" id=\"file\" required/>"
       "<p></p>"
+      "<label for=\"md5\">MD5 Checksum (optional)</label>"
+      "<input type=\"text\" id=\"md5\" name=\"md5\" placeholder=\"32-char hex MD5\"/>"
+      "<p></p>"
+      "<input type=\"hidden\" name=\"csrf\" value=\"");
+    response->print(_csrfToken);
+    response->print("\">"
       "<button class=\"r\">Upload</button>"
       "</form>"
       "<p></p>");
@@ -391,7 +455,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     request->send(response);
   });
   server->on("/update", HTTP_POST, [config](AsyncWebServerRequest *request){
-    
+    if (!validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     request->onDisconnect([](){
@@ -413,13 +477,18 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       request->send(response);
     }
   }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-    
+    if (!index && !validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     dbg("[webserver] OTA progress ");dbgln(index);
     if (!index) {
-      //TODO add MD5 Checksum and Update.setMD5
       int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
+      if (request->hasParam("md5", true)) {
+        String md5 = request->getParam("md5", true)->value();
+        if (md5.length() == 32) {
+          Update.setMD5(md5.c_str());
+        }
+      }
       if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) { // Start with max available size
         Update.printError(Serial);
         return request->send(400, "text/plain", "OTA could not begin");
@@ -454,13 +523,16 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     sendButton(response, "Back", "/");
     response->print("<p></p>"
       "<form method=\"post\">"
+        "<input type=\"hidden\" name=\"csrf\" value=\"");
+    response->print(_csrfToken);
+    response->print("\">"
         "<button class=\"r\">Yes, do it!</button>"
       "</form>");    
     sendResponseTrailer(response);
     request->send(response);
   });
   server->on("/wifi", HTTP_POST, [wm, config](AsyncWebServerRequest *request){
-    
+    if (!validateCsrf(request)) { request->send(403); return; }
     ADMIN_WEB_PASS;
 
     dbgln("[webserver] POST /wifi");
@@ -470,6 +542,13 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     dbgln("[webserver] rebooting...");
     ESP.restart();
     dbgln("[webserver] rebooted...");
+  });
+  server->on("/logout", HTTP_GET, [](AsyncWebServerRequest *request){
+    dbgln("[webserver] GET /logout");
+    auto *response = request->beginResponse(401);
+    response->addHeader("WWW-Authenticate", "Basic realm=\"ESP32 Modbus Gateway\"");
+    response->addHeader("Connection", "close");
+    request->send(response);
   });
   server->on("/favicon.ico", [](AsyncWebServerRequest *request){
     dbgln("[webserver] GET /favicon.ico");
@@ -543,6 +622,16 @@ void sendMinCss(AsyncResponseStream *response){
     "}");
 }
 
+void sendDropdownScript(AsyncResponseStream *response){
+    response->print("<script>"
+      "(function(){"
+        "var s=document.querySelectorAll('select[data-value]');"
+        "for(var d of s){"
+          "d.querySelector(`option[value='${d.dataset.value}']`).selected=true"
+      "}})();"
+      "</script>");
+}
+
 void sendResponseHeader(AsyncResponseStream *response, const char *title, bool inlineStyle){
     response->print("<!DOCTYPE html>"
       "<html lang=\"en\" class=\"\">"
@@ -590,8 +679,17 @@ void sendTableRow(AsyncResponseStream *response, const char *name, uint32_t valu
     response->printf(
       "<tr>"
         "<td>%s:</td>"
-        "<td>%d</td>"
+        "<td>%u</td>"
       "</tr>", name, value);
+}
+
+static String htmlEscape(const String& input) {
+    String s = input;
+    s.replace("&", "&amp;");
+    s.replace("\"", "&quot;");
+    s.replace("<", "&lt;");
+    s.replace(">", "&gt;");
+    return s;
 }
 
 void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, String function, String count){
@@ -602,7 +700,7 @@ void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, St
           "<label for=\"slave\">Slave ID</label>"
         "</td>"
         "<td>");
-    response->printf("<input type=\"number\" min=\"0\" max=\"247\" id=\"slave\" name=\"slave\" value=\"%s\">", slaveId.c_str());
+    response->printf("<input type=\"number\" min=\"0\" max=\"247\" id=\"slave\" name=\"slave\" value=\"%s\">", htmlEscape(slaveId).c_str());
     response->print("</td>"
         "</tr>"
         "<tr>"
@@ -610,7 +708,7 @@ void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, St
             "<label for=\"func\">Function</label>"
           "</td>"
           "<td>");
-    response->printf("<select id=\"func\" name=\"func\" data-value=\"%s\">", function.c_str());
+    response->printf("<select id=\"func\" name=\"func\" data-value=\"%s\">", htmlEscape(function).c_str());
     response->print("<option value=\"1\">01 Read Coils</option>"
               "<option value=\"2\">02 Read Discrete Inputs</option>"
               "<option value=\"3\">03 Read Holding Register</option>"
@@ -623,7 +721,7 @@ void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, St
             "<label for=\"reg\">Register</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"number\" min=\"0\" max=\"65535\" id=\"reg\" name=\"reg\" value=\"%s\">", reg.c_str());
+    response->printf("<input type=\"number\" min=\"0\" max=\"65535\" id=\"reg\" name=\"reg\" value=\"%s\">", htmlEscape(reg).c_str());
     response->print("</td>"
         "</tr>"
         "<tr>"
@@ -631,23 +729,20 @@ void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, St
             "<label for=\"count\">Count</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"number\" min=\"0\" max=\"65535\" id=\"count\" name=\"count\" value=\"%s\">", count.c_str());
+    response->printf("<input type=\"number\" min=\"0\" max=\"65535\" id=\"count\" name=\"count\" value=\"%s\">", htmlEscape(count).c_str());
     response->print("</td>"
         "</tr>"
       "</table>");
     response->print("<button class=\"r\">Send</button>"
+      "<input type=\"hidden\" name=\"csrf\" value=\"");
+    response->print(_csrfToken);
+    response->print("\">"
       "</form>"
       "<p></p>");
-    response->print("<script>"
-      "(function(){"
-        "var s = document.querySelectorAll('select[data-value]');"
-        "for(d of s){"
-          "d.querySelector(`option[value='${d.dataset.value}']`).selected=true"
-      "}})();"
-      "</script>");
+    sendDropdownScript(response);
 }
 
-const String ErrorName(Modbus::Error code)
+String ErrorName(Modbus::Error code)
 {
     switch (code)
     {
@@ -683,7 +778,7 @@ const String ErrorName(Modbus::Error code)
 }
 
 // translate RSSI to quality string
-const String WiFiQuality(int rssiValue)
+String WiFiQuality(int rssiValue)
 {
     switch (rssiValue)
     {

@@ -3,6 +3,7 @@
 #include <WiFiManager.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
+#include <esp_task_wdt.h>
 #include <Logging.h>
 #include <ModbusBridgeWiFi.h>
 #include <ModbusClientRTU.h>
@@ -15,6 +16,9 @@ Preferences prefs;
 ModbusClientRTU *MBclient;
 ModbusBridgeWiFi MBbridge;
 WiFiManager wm;
+bool configChanged = false;
+uint32_t lastTelemetry = 0;
+const uint32_t TELEMETRY_INTERVAL = 3600000;
 
 void setup() {
   debugSerial.begin(115200);
@@ -22,6 +26,13 @@ void setup() {
   dbgln("[config] load")
   prefs.begin("modbusRtuGw");
   config.begin(&prefs);
+  if (config.getWebPassword().isEmpty()) {
+    debugSerial.println();
+    debugSerial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    debugSerial.println("! WARNING: No web password set!                  !");
+    debugSerial.println("! Set one via the Config page to secure the web UI.");
+    debugSerial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  }
   debugSerial.end();
   debugSerial.begin(config.getSerialBaudRate(), config.getSerialConfig());
   dbgln("[wifi] start");
@@ -49,18 +60,36 @@ void setup() {
 
   MBclient = new ModbusClientRTU(config.getModbusRtsPin());
   MBclient->setTimeout(1000);
-  MBclient->begin(modbusSerial, 1);
+  MBclient->begin(modbusSerial, MODBUS_QUEUE_DEPTH);
   for (uint8_t i = 1; i < 248; i++)
   {
     MBbridge.attachServer(i, i, ANY_FUNCTION_CODE, MBclient);
   }  
   MBbridge.start(config.getTcpPort(), 10, config.getTcpTimeout());
   dbgln("[modbus] finished");
-  setupPages(&webServer, MBclient, &MBbridge, &config, &wm);
+  setupPages(&webServer, MBclient, &MBbridge, &config, &wm, &configChanged);
   webServer.begin();
   dbgln("[setup] finished");
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  esp_task_wdt_reset();
+
+  if (configChanged) {
+    configChanged = false;
+    dbgln("[system] config changed, rebooting...");
+    delay(100);
+    ESP.restart();
+  }
+
+  uint32_t now = millis();
+  if (lastTelemetry == 0 || now - lastTelemetry >= TELEMETRY_INTERVAL) {
+    lastTelemetry = now;
+    dbg("[telemetry] uptime="); dbg(now / 1000);
+    dbg("s rssi="); dbg(WiFi.RSSI());
+    dbg("dBm ip="); dbg(WiFi.localIP().toString());
+    dbgln("");
+  }
+
+  delay(10);
 }
