@@ -2,6 +2,7 @@
 #include <AsyncTCP.h>
 #include <WiFiManager.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <Logging.h>
@@ -74,6 +75,12 @@ void setup() {
   dbgln("[modbus] finished");
   setupPages(&webServer, MBclient, &MBbridge, &config, &wm, &configChanged);
   webServer.begin();
+  if (MDNS.begin(config.getHostname().c_str())) {
+    MDNS.addService("http", "tcp", 80);
+    dbg("[mdns] started at "); dbg(config.getHostname()); dbgln(".local");
+  } else {
+    dbgln("[mdns] failed to start");
+  }
   dbgln("[setup] finished");
 }
 
@@ -94,6 +101,7 @@ void loop() {
     dbg("[telemetry] uptime="); dbg(now / 1000);
     dbg("s rssi="); dbg(WiFi.RSSI());
     dbg("dBm ip="); dbg(WiFi.localIP().toString());
+    dbg(" hostname="); dbg(config.getHostname());
     dbgln("");
   }
 

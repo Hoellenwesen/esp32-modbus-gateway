@@ -19,6 +19,7 @@ Config::Config()
     ,_serialConfig(SERIAL_8N1)
     ,_webPassword("")
     ,_bridgeEnabled(true)
+    ,_hostname("esp32-modbus-gateway")
     ,_dirty(false)
 {}
 
@@ -34,6 +35,7 @@ void Config::begin(Preferences *prefs)
     _serialConfig = _prefs->getULong("serialConfig", _serialConfig);
     _webPassword = _prefs->getString("webPassword", _webPassword);
     _bridgeEnabled = _prefs->getBool("bridgeEn", _bridgeEnabled);
+    _hostname = _prefs->getString("hostname", _hostname);
 }
 
 uint16_t Config::getTcpPort(){
@@ -181,6 +183,18 @@ bool Config::getBridgeEnabled(){
     return _bridgeEnabled;
 }
 
+void Config::setHostname(String value){
+    value.trim();
+    if (value.length() < 1 || value.length() > 63) return;
+    if (_hostname == value) return;
+    _hostname = value;
+    _dirty = true;
+}
+
+String Config::getHostname(){
+    return _hostname;
+}
+
 void Config::save() {
     if (!_prefs || !_dirty) return;
     _prefs->putUShort("tcpPort", _tcpPort);
@@ -192,5 +206,6 @@ void Config::save() {
     _prefs->putULong("serialConfig", _serialConfig);
     _prefs->putString("webPassword", _webPassword);
     _prefs->putBool("bridgeEn", _bridgeEnabled);
+    _prefs->putString("hostname", _hostname);
     _dirty = false;
 }

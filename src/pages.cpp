@@ -1,6 +1,7 @@
 #include "pages.h"
 #include <esp_timer.h>
 #include <esp_system.h>
+#include <mbedtls/sha256.h>
 static String _csrfToken;
 
 static String generateCsrfToken() {
@@ -67,6 +68,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     sendTableRow(response, "ESP WiFi Quality", WiFiQuality(WiFi.RSSI()));
     sendTableRow(response, "ESP MAC", WiFi.macAddress());
     sendTableRow(response, "ESP IP",  WiFi.localIP().toString() );
+    sendTableRow(response, "ESP Hostname", config->getHostname() + ".local");
 
     sendTableRow(response, "RTU Messages", rtu->getMessageCount());
     sendTableRow(response, "RTU Pending Messages", rtu->pendingRequests());
@@ -255,6 +257,14 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
         "<table>"
         "<tr>"
           "<td>"
+            "<label for=\"hn\">Hostname</label>"
+          "</td>"
+          "<td>");
+    response->printf("<input type=\"text\" id=\"hn\" name=\"hn\" maxlength=\"63\" value=\"%s\">", config->getHostname().c_str());
+    response->print("</td>"
+        "</tr>"
+        "<tr>"
+          "<td>"
             "<label for=\"wp\">Web password</label>"
           "</td>"
           "<td>");
@@ -351,6 +361,11 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
         config->setWebPassword(wp);
         dbgln("[webserver] saved web password");
       }
+    }
+    if (request->hasParam("hn", true)){
+      String hn = request->getParam("hn", true)->value();
+      config->setHostname(hn);
+      dbg("[webserver] saved hostname: "); dbgln(hn);
     }
     config->save();
     *configChanged = true;
@@ -453,18 +468,81 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     dbgln("[webserver] GET /update");
     auto *response = request->beginResponseStream("text/html");
     sendResponseHeader(response, "Firmware Update");
-    response->print("<form method=\"post\" enctype=\"multipart/form-data\">"
-      "<input type=\"file\" name=\"file\" id=\"file\" required/>"
-      "<p></p>"
-      "<label for=\"md5\">MD5 Checksum (optional)</label>"
-      "<input type=\"text\" id=\"md5\" name=\"md5\" placeholder=\"32-char hex MD5\"/>"
-      "<p></p>"
+    response->print("<form method=\"post\" enctype=\"multipart/form-data\" id=\"uploadForm\">"
       "<input type=\"hidden\" name=\"csrf\" value=\"");
     response->print(_csrfToken);
     response->print("\">"
-      "<button class=\"r\">Upload</button>"
+      "<div id=\"uploadFields\">"
+        "<label for=\"sha256\">SHA256 Checksum (optional)</label>"
+        "<input type=\"text\" id=\"sha256\" name=\"sha256\" placeholder=\"64-char hex SHA256\"/>"
+        "<p></p>"
+        "<input type=\"file\" name=\"file\" id=\"file\" required/>"
+      "</div>"
+      "<p></p>"
+      "<div id=\"progressWrap\" style=\"display:none\">"
+        "<div id=\"progressBar\"><div id=\"progressFill\"></div></div>"
+        "<p id=\"progressText\">Starting upload...</p>"
+      "</div>"
+      "<p></p>"
+      "<button class=\"r\" id=\"uploadBtn\">Upload</button>"
       "</form>"
-      "<p></p>");
+      "<p></p>"
+      "<style>"
+        "#progressWrap{margin:16px 0}"
+        "#progressBar{height:20px;background:#444;border-radius:4px;overflow:hidden}"
+        "#progressFill{height:100%;width:0%;background:#1fa3ec;transition:width .3s}"
+        "#progressText{margin:8px 0 0;font-size:.9rem}"
+      "</style>"
+      "<script>"
+        "document.getElementById('uploadForm').addEventListener('submit',function(e){"
+          "e.preventDefault();"
+          "var btn=document.getElementById('uploadBtn');"
+          "var wrap=document.getElementById('progressWrap');"
+          "var fill=document.getElementById('progressFill');"
+          "var txt=document.getElementById('progressText');"
+          "document.getElementById('uploadFields').style.display='none';"
+          "btn.disabled=true;"
+          "wrap.style.display='block';fill.style.width='0%';"
+          "txt.textContent='Starting upload...';"
+          "var xhr=new XMLHttpRequest();"
+          "xhr.upload.addEventListener('progress',function(ev){"
+            "if(ev.lengthComputable){"
+              "var p=Math.round(ev.loaded/ev.total*100);"
+              "fill.style.width=p+'%';"
+              "txt.textContent=p<100?'Uploading... '+p+'%':'Installing...';"
+            "}"
+          "});"
+          "xhr.addEventListener('load',function(){"
+            "if(xhr.status==200){"
+              "txt.textContent='Installation complete, rebooting...';"
+              "fill.style.width='100%';"
+              "setTimeout(function(){"
+                "(function poll(){"
+                  "fetch('/').then(function(){window.location.href='/';})"
+                  ".catch(function(){setTimeout(poll,2000);});"
+                "})();"
+              "},6000);"
+            "}else if(xhr.status==403){"
+              "txt.textContent='Error: invalid session. Reload and try again.';"
+              "btn.disabled=false;"
+            "}else{"
+              "txt.textContent='Error: '+xhr.status;"
+              "btn.disabled=false;"
+            "}"
+          "});"
+          "xhr.addEventListener('error',function(){"
+            "var w=parseInt(fill.style.width)||0;"
+            "if(w>=100){"
+              "txt.textContent='Installation complete, rebooting...';"
+            "}else{"
+              "txt.textContent='Upload failed. Check connection.';"
+              "btn.disabled=false;"
+            "}"
+          "});"
+          "xhr.open('POST','/update');"
+          "xhr.send(new FormData(document.getElementById('uploadForm')));"
+        "});"
+      "</script>");
     sendButton(response, "Back", "/");
     sendResponseTrailer(response);
     request->send(response);
@@ -473,35 +551,50 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     if (!validateCsrf(request)) { request->send(403); return; }
     if (!adminAuth(request, config)) return;
 
-    request->onDisconnect([](){
-      ESP.restart();
-    });
     dbgln("[webserver] OTA finished");
     if (Update.hasError()){
       auto *response = request->beginResponse(500, "text/plain", "Ota failed");
-      response->addHeader("Connection", "close");
-      request->send(response);
+      if (response) {
+        response->addHeader("Connection", "close");
+        request->send(response);
+      }
+      return;
     }
-    else{
-      auto *response = request->beginResponseStream("text/html");
-      response->addHeader("Connection", "close");
-      sendResponseHeader(response, "Firmware Update", true);
-      response->print("<p>Update successful.</p>");
-      sendButton(response, "Back", "/");
-      sendResponseTrailer(response);
-      request->send(response);
-    }
+    String html = F("<!DOCTYPE html><html lang=\"en\"><head>"
+      "<meta charset='utf-8'>"
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\"/>"
+      "<title>ESP32 Modbus Gateway - Firmware Update</title>"
+      "<style>body{font-family:sans-serif;text-align:center;background:#252525;color:#faffff}"
+      "#content{display:inline-block;min-width:340px}"
+      "button{width:100%;line-height:2.4rem;background:#1fa3ec;border:0;border-radius:0.3rem;font-size:1.2rem;color:#faffff}"
+      "button:hover{background:#0e70a4}"
+      "button.r{background:#d43535}button.r:hover{background:#931f1f}"
+      "</style></head><body>"
+      "<h2>ESP32 Modbus Gateway</h2>"
+      "<h3>Firmware Update</h3>"
+      "<div id=\"content\">"
+      "<p>Update successful.</p>"
+      "<form method=\"get\" action=\"/\"><button>Back</button></form>"
+      "<p></p></div></body></html>");
+    request->send(200, "text/html", html);
+    delay(500);
+    ESP.restart();
   }, [config](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+    static mbedtls_sha256_context shaCtx;
+    static String expectedSha256;
     if (!index && !validateCsrf(request)) { request->send(403); return; }
     if (!adminAuth(request, config)) return;
 
     dbg("[webserver] OTA progress ");dbgln(index);
     if (!index) {
+      expectedSha256 = "";
       int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
-      if (request->hasParam("md5", true)) {
-        String md5 = request->getParam("md5", true)->value();
-        if (md5.length() == 32) {
-          Update.setMD5(md5.c_str());
+      if (request->hasParam("sha256", true)) {
+        String sha256 = request->getParam("sha256", true)->value();
+        if (sha256.length() == 64) {
+          expectedSha256 = sha256;
+          mbedtls_sha256_init(&shaCtx);
+          mbedtls_sha256_starts_ret(&shaCtx, 0);
         }
       }
       if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) { // Start with max available size
@@ -516,6 +609,22 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       }
     }
     if (final) { // if the final flag is set then this is the last frame of data
+      if (expectedSha256.length() == 64) {
+        uint8_t hash[32];
+        mbedtls_sha256_finish_ret(&shaCtx, hash);
+        mbedtls_sha256_free(&shaCtx);
+        String hex;
+        for (int i = 0; i < 32; i++) {
+          hex += "0123456789abcdef"[hash[i] >> 4];
+          hex += "0123456789abcdef"[hash[i] & 0x0F];
+        }
+        if (hex != expectedSha256) {
+          Update.abort();
+          dbgln("[webserver] SHA256 mismatch");
+          return request->send(400, "text/plain", "SHA256 mismatch");
+        }
+        expectedSha256 = "";
+      }
       if (!Update.end(true)) { //true to set the size to the current progress
         Update.printError(Serial);
         return request->send(400, "text/plain", "Could not end OTA");

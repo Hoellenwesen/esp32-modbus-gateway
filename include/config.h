@@ -18,6 +18,7 @@
             uint32_t _serialConfig;
             String _webPassword;
             bool _bridgeEnabled;
+            String _hostname;
             bool _dirty;
         public:
             Config();
@@ -51,6 +52,8 @@
             void setWebPassword(String value);
             bool getBridgeEnabled();
             void setBridgeEnabled(bool value);
+            String getHostname();
+            void setHostname(String value);
     };
     #ifdef ENABLE_DEBUG
     #define dbg(x...) debugSerial.print(x);
