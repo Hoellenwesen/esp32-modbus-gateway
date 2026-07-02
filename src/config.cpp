@@ -18,6 +18,7 @@ Config::Config()
     ,_serialBaudRate(115200)
     ,_serialConfig(SERIAL_8N1)
     ,_webPassword("")
+    ,_bridgeEnabled(true)
     ,_dirty(false)
 {}
 
@@ -32,6 +33,7 @@ void Config::begin(Preferences *prefs)
     _serialBaudRate = _prefs->getULong("serialBaudRate", _serialBaudRate);
     _serialConfig = _prefs->getULong("serialConfig", _serialConfig);
     _webPassword = _prefs->getString("webPassword", _webPassword);
+    _bridgeEnabled = _prefs->getBool("bridgeEn", _bridgeEnabled);
 }
 
 uint16_t Config::getTcpPort(){
@@ -169,6 +171,16 @@ void Config::setWebPassword(String value){
     _dirty = true;
 }
 
+void Config::setBridgeEnabled(bool value){
+    if (_bridgeEnabled == value) return;
+    _bridgeEnabled = value;
+    _dirty = true;
+}
+
+bool Config::getBridgeEnabled(){
+    return _bridgeEnabled;
+}
+
 void Config::save() {
     if (!_prefs || !_dirty) return;
     _prefs->putUShort("tcpPort", _tcpPort);
@@ -179,5 +191,6 @@ void Config::save() {
     _prefs->putULong("serialBaudRate", _serialBaudRate);
     _prefs->putULong("serialConfig", _serialConfig);
     _prefs->putString("webPassword", _webPassword);
+    _prefs->putBool("bridgeEn", _bridgeEnabled);
     _dirty = false;
 }

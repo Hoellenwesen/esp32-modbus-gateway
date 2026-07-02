@@ -64,8 +64,13 @@ void setup() {
   for (uint8_t i = 1; i < 248; i++)
   {
     MBbridge.attachServer(i, i, ANY_FUNCTION_CODE, MBclient);
-  }  
-  MBbridge.start(config.getTcpPort(), 10, config.getTcpTimeout());
+  }
+  if (config.getBridgeEnabled()) {
+    MBbridge.start(config.getTcpPort(), 10, config.getTcpTimeout());
+    dbgln("[modbus] bridge started");
+  } else {
+    dbgln("[modbus] bridge disabled by config");
+  }
   dbgln("[modbus] finished");
   setupPages(&webServer, MBclient, &MBbridge, &config, &wm, &configChanged);
   webServer.begin();
@@ -79,6 +84,7 @@ void loop() {
     configChanged = false;
     dbgln("[system] config changed, rebooting...");
     delay(100);
+    prefs.end();
     ESP.restart();
   }
 

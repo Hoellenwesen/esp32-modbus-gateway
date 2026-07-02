@@ -17,6 +17,7 @@
             uint32_t _serialBaudRate;
             uint32_t _serialConfig;
             String _webPassword;
+            bool _bridgeEnabled;
             bool _dirty;
         public:
             Config();
@@ -48,6 +49,8 @@
             void setSerialStopBits(uint8_t value);
             String getWebPassword();
             void setWebPassword(String value);
+            bool getBridgeEnabled();
+            void setBridgeEnabled(bool value);
     };
     #ifdef ENABLE_DEBUG
     #define dbg(x...) debugSerial.print(x);

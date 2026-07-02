@@ -19,13 +19,16 @@ static bool validateCsrf(AsyncWebServerRequest *request) {
     return request->getParam("csrf", true)->value() == _csrfToken;
 }
 #define ETAG "\"" __DATE__ "-" __TIME__ "\""
-#define ADMIN_WEB_PASS  \
-        String _webPass = config->getWebPassword(); \
-        if ((!_webPass.equals("")) && (!request->authenticate("admin", _webPass.c_str()))) { \
-            delay(500); \
-            return request->requestAuthentication(); \
-        }
-#define WEB_PASS_PLACEHOLDER "****"
+static bool adminAuth(AsyncWebServerRequest *request, Config *config) {
+    String _webPass = config->getWebPassword();
+    if ((!_webPass.equals("")) && (!request->authenticate("admin", _webPass.c_str()))) {
+        delay(500);
+        request->requestAuthentication();
+        return false;
+    }
+    return true;
+}
+#define MIN_PASSWORD_LENGTH 8
 
 
 void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *bridge, Config *config, WiFiManager *wm, bool *configChanged){
@@ -33,7 +36,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
 
   server->on("/", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /");
     auto *response = request->beginResponseStream("text/html");
@@ -50,7 +53,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/status", HTTP_GET, [rtu, bridge, config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /status");
     auto *response = request->beginResponseStream("text/html");
@@ -80,7 +83,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/reboot", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /reboot");
     auto *response = request->beginResponseStream("text/html");
@@ -97,17 +100,16 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/reboot", HTTP_POST, [config](AsyncWebServerRequest *request){
     if (!validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] POST /reboot");
-    request->redirect("/");
     dbgln("[webserver] rebooting...")
     ESP.restart();
     dbgln("[webserver] rebooted...")
   });
   server->on("/config", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /config");
     auto *response = request->beginResponseStream("text/html");
@@ -128,6 +130,14 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
         "</td>"
         "<td>");
     response->printf("<input type=\"number\" min=\"1\" id=\"tt\" name=\"tt\" value=\"%u\">", config->getTcpTimeout());
+    response->print("</td>"
+        "</tr>"
+        "<tr>"
+          "<td>"
+            "<label for=\"be\">Bridge enabled</label>"
+          "</td>"
+          "<td>");
+    response->printf("<input type=\"checkbox\" id=\"be\" name=\"be\" value=\"1\"%s>", config->getBridgeEnabled() ? " checked" : "");
     response->print("</td>"
         "</tr>"
         "</table>"
@@ -248,7 +258,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
             "<label for=\"wp\">Web password</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"password\" min=\"0\" id=\"wp\" name=\"wp\" value=\"%s\">", WEB_PASS_PLACEHOLDER); // we're not returning configured password to user instead we're sending placeholder
+    response->print("<input type=\"password\" id=\"wp\" name=\"wp\" placeholder=\"Leave empty to keep current\">");
     response->print("</td>"
         "</tr>"
         "</table>");
@@ -266,7 +276,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/config", HTTP_POST, [config, configChanged](AsyncWebServerRequest *request){
     if (!validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] POST /config");
     if (request->hasParam("tp", true)){
@@ -279,6 +289,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       config->setTcpTimeout(timeout);
       dbgln("[webserver] saved timeout");
     }
+    config->setBridgeEnabled(request->hasParam("be", true));
     if (request->hasParam("mb", true)){
       auto baud = request->getParam("mb", true)->value().toInt();
       if (baud >= 1200) {
@@ -330,11 +341,15 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
     }
     if (request->hasParam("wp", true)){
       String wp = request->getParam("wp", true)->value();
-      if (!wp.equals(WEB_PASS_PLACEHOLDER)) {
+      if (wp.length() == 0) {
+        dbgln("[webserver] web password not changed");
+      } else if (wp.length() < MIN_PASSWORD_LENGTH) {
+        dbgln("[webserver] web password too short, minimum 8 characters");
+      } else if (wp.length() > 64) {
+        dbgln("[webserver] web password too long, maximum 64 characters");
+      } else {
         config->setWebPassword(wp);
         dbgln("[webserver] saved web password");
-      } else {
-        dbgln("[webserver] web password not changed");
       }
     }
     config->save();
@@ -343,7 +358,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/debug", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /debug");
     auto *response = request->beginResponseStream("text/html");
@@ -355,7 +370,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/debug", HTTP_POST, [rtu, config](AsyncWebServerRequest *request){
     if (!validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] POST /debug");
     String slaveId = "1";
@@ -433,7 +448,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/update", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /update");
     auto *response = request->beginResponseStream("text/html");
@@ -456,7 +471,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/update", HTTP_POST, [config](AsyncWebServerRequest *request){
     if (!validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     request->onDisconnect([](){
       ESP.restart();
@@ -476,9 +491,9 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       sendResponseTrailer(response);
       request->send(response);
     }
-  }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+  }, [config](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
     if (!index && !validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbg("[webserver] OTA progress ");dbgln(index);
     if (!index) {
@@ -511,7 +526,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/wifi", HTTP_GET, [config](AsyncWebServerRequest *request){
     
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] GET /wifi");
     auto *response = request->beginResponseStream("text/html");
@@ -533,10 +548,9 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   });
   server->on("/wifi", HTTP_POST, [wm, config](AsyncWebServerRequest *request){
     if (!validateCsrf(request)) { request->send(403); return; }
-    ADMIN_WEB_PASS;
+    if (!adminAuth(request, config)) return;
 
     dbgln("[webserver] POST /wifi");
-    request->redirect("/");
     wm->erase();
     dbgln("[webserver] erased wifi config");
     dbgln("[webserver] rebooting...");
