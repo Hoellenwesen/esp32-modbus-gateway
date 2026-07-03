@@ -38,11 +38,16 @@ jobs:
       - name: Build d1mini
         run: pio run -e d1mini
 
+      - name: Rename firmware files
+        run: |
+          cp .pio/build/esp32release/firmware.bin esp32release-firmware.bin
+          cp .pio/build/d1mini/firmware.bin d1mini-firmware.bin
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
           files: |
-            .pio/build/esp32release/firmware.bin
-            .pio/build/d1mini/firmware.bin
+            esp32release-firmware.bin
+            d1mini-firmware.bin
           generate_release_notes: true
