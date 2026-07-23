@@ -70,3 +70,43 @@ All notable security improvements and changes to this project are documented her
 - `src/config.cpp`: `_hostname` field + getter/setter + NVS persistence
 - `src/main.cpp`: `ESPmDNS.h` include, MDNS begin + service registration, hostname in telemetry
 - `include/config.h`: `_hostname` field + getter/setter declarations
+
+### 2026-07-23 — Modbus Serial Config, Security & Reliability Fixes
+
+#### Security Improvements
+
+- **XSS prevention in status page**: `sendTableRow()` now HTML-escapes the `value` parameter via `htmlEscape()`. Previously `WiFi.SSID()` and other status values were injected raw into HTML, allowing stored XSS via malicious SSIDs.
+
+- **Hostname character validation**: `Config::setHostname()` now rejects hostnames containing characters outside `[a-zA-Z0-9-]`. Prevents HTML injection in the config form and broken mDNS registration.
+
+- **Hostname HTML escaping**: Config page hostname input field escapes the current value with `htmlEscape()` to prevent attribute injection.
+
+- **Brute-force throttling rewritten**: Replaced blocking `delay(500)` in `adminAuth()` with a non-blocking timestamp-based throttle. Failed auth now returns HTTP 429 if attempted within 500ms of the last failure, eliminating the DoS vector where a single attacker could stall all web requests and the Modbus TCP bridge.
+
+#### Fixed
+
+- **Stop bits encoding off-by-one**: `encodeStopBits()` now produces the correct IDF `uart_stop_bits_t` enum values packed into bits[5:4]. Previously 1 stop bit encoded as 0x00 (invalid IDF value 0) and 2 stop bits encoded as 0x10 (1.5 stop bits). Verified against `esp32-hal-uart.c` and `uart_types.h`.
+
+- **Stop bits decode**: `getModbusStopBits()` and `getSerialStopBits()` now return human-readable values (1 or 2) instead of raw IDF enum values (1 or 3).
+
+- **Stop bits UI**: Removed unsupported "1.5 bits" option from both Modbus and serial stop bits dropdowns. ESP32 UART only supports 1 or 2 stop bits for data widths > 5 bits. POST handler constrained to 1-2.
+
+- **Parity value 1 rejected**: POST handler now rejects parity value 1 (MARK), which was accepted by `constrain(0,3)` but not offered in the UI and unsupported by the ESP32 UART config.
+
+- **OTA auto-redirect after reboot**: Extracted polling logic into shared `startPoll()` function, now called from both the XHR `load` handler (status 200) and the `error` handler (when upload progress was already at 100%). Previously if the XHR response was lost during `delay(500)` + `ESP.restart()`, the `error` handler displayed "Installation complete, rebooting..." but never started the redirect loop.
+
+- **OTA auth/CSRF blocking on every chunk**: Moved auth and CSRF validation to run only at `index == 0` (first chunk) with an `otaAuthenticated` flag guarding subsequent chunks. Previously `adminAuth()` with its 500ms throttle ran on every upload chunk, making OTA uploads extremely slow.
+
+- **`MODBUS_QUEUE_DEPTH` misuse**: Renamed to `RTU_CORE_ID`. The value `1` was being passed as the `coreID` parameter to `ModbusClientRTU::begin(HardwareSerial&, int)`, not as a queue depth. Actual queue depth was silently 100 (constructor default). The core1 pinning is correct and retained.
+
+- **`configChanged` data race**: Changed from `bool` to `volatile bool` since it is written from an async web server handler and read from `loop()` on different tasks.
+
+- **Debug serial reinit logging**: Added `dbgln("[serial] switching to configured baud rate")` before `debugSerial.end()` so the baud rate switch is visible in serial output.
+
+#### Changed
+
+- `src/config.cpp`: `encodeStopBits()` IDF enum fix, `getModbusStopBits()`/`getSerialStopBits()` decode fix, `setHostname()` character validation
+- `src/pages.cpp`: Stop bits/parity constraints, `sendTableRow()` XSS fix, `htmlEscape()` repositioned, hostname escaping, `adminAuth()` non-blocking throttle, OTA auth at index==0, `startPoll()` for auto-redirect
+- `src/main.cpp`: `volatile bool configChanged`, `RTU_CORE_ID` usage, serial reinit log
+- `include/config.h`: `volatile bool configChanged`, `RTU_CORE_ID` define
+- `AGENTS.md`: Created with build commands, architecture, library quirks, and gotchas

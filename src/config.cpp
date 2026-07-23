@@ -5,7 +5,8 @@ static inline uint8_t encodeDataBits(uint8_t value) {
 }
 
 static inline uint8_t encodeStopBits(uint8_t value) {
-    return (value << 4) & 0x30;
+    uint8_t idf_val = (value >= 2) ? 3 : 1;
+    return (idf_val << 4) & 0x30;
 }
 
 Config::Config()
@@ -95,7 +96,8 @@ void Config::setModbusParity(uint8_t value){
 }
 
 uint8_t Config::getModbusStopBits(){
-    return (_modbusConfig & 0x30) >> 4;
+    uint8_t raw = (_modbusConfig & 0x30) >> 4;
+    return (raw >= 3) ? 2 : 1;
 }
 
 void Config::setModbusStopBits(uint8_t value){
@@ -152,7 +154,8 @@ void Config::setSerialParity(uint8_t value){
 }
 
 uint8_t Config::getSerialStopBits(){
-    return (_serialConfig & 0x30) >> 4;
+    uint8_t raw = (_serialConfig & 0x30) >> 4;
+    return (raw >= 3) ? 2 : 1;
 }
 
 void Config::setSerialStopBits(uint8_t value){
@@ -186,6 +189,10 @@ bool Config::getBridgeEnabled(){
 void Config::setHostname(String value){
     value.trim();
     if (value.length() < 1 || value.length() > 63) return;
+    for (unsigned int i = 0; i < value.length(); i++) {
+        char c = value[i];
+        if (!isalnum(c) && c != '-') return;
+    }
     if (_hostname == value) return;
     _hostname = value;
     _dirty = true;

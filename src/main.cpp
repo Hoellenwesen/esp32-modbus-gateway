@@ -17,7 +17,7 @@ Preferences prefs;
 ModbusClientRTU *MBclient;
 ModbusBridgeWiFi MBbridge;
 WiFiManager wm;
-bool configChanged = false;
+volatile bool configChanged = false;
 uint32_t lastTelemetry = 0;
 const uint32_t TELEMETRY_INTERVAL = 3600000;
 
@@ -34,6 +34,7 @@ void setup() {
     debugSerial.println("! Set one via the Config page to secure the web UI.");
     debugSerial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
   }
+  dbgln("[serial] switching to configured baud rate");
   debugSerial.end();
   debugSerial.begin(config.getSerialBaudRate(), config.getSerialConfig());
   dbgln("[wifi] start");
@@ -61,7 +62,7 @@ void setup() {
 
   MBclient = new ModbusClientRTU(config.getModbusRtsPin());
   MBclient->setTimeout(1000);
-  MBclient->begin(modbusSerial, MODBUS_QUEUE_DEPTH);
+  MBclient->begin(modbusSerial, RTU_CORE_ID);
   for (uint8_t i = 1; i < 248; i++)
   {
     MBbridge.attachServer(i, i, ANY_FUNCTION_CODE, MBclient);
@@ -73,7 +74,7 @@ void setup() {
     dbgln("[modbus] bridge disabled by config");
   }
   dbgln("[modbus] finished");
-  setupPages(&webServer, MBclient, &MBbridge, &config, &wm, &configChanged);
+  setupPages(&webServer, MBclient, &MBbridge, &config, &wm, (bool*)&configChanged);
   webServer.begin();
   if (MDNS.begin(config.getHostname().c_str())) {
     MDNS.addService("http", "tcp", 80);

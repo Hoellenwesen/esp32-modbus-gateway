@@ -4,7 +4,7 @@
     #include <Preferences.h>
     #define debugSerial Serial
     #define modbusSerial Serial2
-    #define MODBUS_QUEUE_DEPTH 1
+    #define RTU_CORE_ID 1
 
     class Config{
         private:

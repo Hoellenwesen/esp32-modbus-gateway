@@ -4,6 +4,15 @@
 #include <mbedtls/sha256.h>
 static String _csrfToken;
 
+static String htmlEscape(const String& input) {
+    String s = input;
+    s.replace("&", "&amp;");
+    s.replace("\"", "&quot;");
+    s.replace("<", "&lt;");
+    s.replace(">", "&gt;");
+    return s;
+}
+
 static String generateCsrfToken() {
     uint8_t buf[8];
     for (int i = 0; i < 8; i++) buf[i] = esp_random() & 0xFF;
@@ -20,10 +29,16 @@ static bool validateCsrf(AsyncWebServerRequest *request) {
     return request->getParam("csrf", true)->value() == _csrfToken;
 }
 #define ETAG "\"" __DATE__ "-" __TIME__ "\""
+static uint32_t lastAuthFail = 0;
 static bool adminAuth(AsyncWebServerRequest *request, Config *config) {
     String _webPass = config->getWebPassword();
     if ((!_webPass.equals("")) && (!request->authenticate("admin", _webPass.c_str()))) {
-        delay(500);
+        uint32_t now = millis();
+        if (now - lastAuthFail < 500) {
+            request->send(429);
+            return false;
+        }
+        lastAuthFail = now;
         request->requestAuthentication();
         return false;
     }
@@ -180,8 +195,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
           "<td>");
     response->printf("<select id=\"ms\" name=\"ms\" data-value=\"%d\">", config->getModbusStopBits());
     response->print("<option value=\"1\">1 bit</option>"
-              "<option value=\"2\">1.5 bits</option>"
-              "<option value=\"3\">2 bits</option>"
+              "<option value=\"2\">2 bits</option>"
             "</select>"
           "</td>"
         "</tr>"
@@ -246,8 +260,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
           "<td>");
     response->printf("<select id=\"ss\" name=\"ss\" data-value=\"%d\">", config->getSerialStopBits());
     response->print("<option value=\"1\">1 bit</option>"
-              "<option value=\"2\">1.5 bits</option>"
-              "<option value=\"3\">2 bits</option>"
+              "<option value=\"2\">2 bits</option>"
             "</select>"
           "</td>"
         "</tr>"
@@ -260,7 +273,7 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
             "<label for=\"hn\">Hostname</label>"
           "</td>"
           "<td>");
-    response->printf("<input type=\"text\" id=\"hn\" name=\"hn\" maxlength=\"63\" value=\"%s\">", config->getHostname().c_str());
+    response->printf("<input type=\"text\" id=\"hn\" name=\"hn\" maxlength=\"63\" value=\"%s\">", htmlEscape(config->getHostname()).c_str());
     response->print("</td>"
         "</tr>"
         "<tr>"
@@ -313,12 +326,13 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       dbgln("[webserver] saved modbus data bits");
     }
     if (request->hasParam("mp", true)){
-      auto parity = constrain(request->getParam("mp", true)->value().toInt(), 0, 3);
+      auto parity = request->getParam("mp", true)->value().toInt();
+      if (parity == 1 || parity < 0 || parity > 3) parity = 0;
       config->setModbusParity(parity);
       dbgln("[webserver] saved modbus parity");
     }
     if (request->hasParam("ms", true)){
-      auto stop = constrain(request->getParam("ms", true)->value().toInt(), 1, 3);
+      auto stop = constrain(request->getParam("ms", true)->value().toInt(), 1, 2);
       config->setModbusStopBits(stop);
       dbgln("[webserver] saved modbus stop bits");
     }
@@ -340,12 +354,13 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
       dbgln("[webserver] saved serial data bits");
     }
     if (request->hasParam("sp", true)){
-      auto parity = constrain(request->getParam("sp", true)->value().toInt(), 0, 3);
+      auto parity = request->getParam("sp", true)->value().toInt();
+      if (parity == 1 || parity < 0 || parity > 3) parity = 0;
       config->setSerialParity(parity);
       dbgln("[webserver] saved serial parity");
     }
     if (request->hasParam("ss", true)){
-      auto stop = constrain(request->getParam("ss", true)->value().toInt(), 1, 3);
+      auto stop = constrain(request->getParam("ss", true)->value().toInt(), 1, 2);
       config->setSerialStopBits(stop);
       dbgln("[webserver] saved serial stop bits");
     }
@@ -494,51 +509,57 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
         "#progressText{margin:8px 0 0;font-size:.9rem}"
       "</style>"
       "<script>"
-        "document.getElementById('uploadForm').addEventListener('submit',function(e){"
-          "e.preventDefault();"
-          "var btn=document.getElementById('uploadBtn');"
-          "var wrap=document.getElementById('progressWrap');"
-          "var fill=document.getElementById('progressFill');"
-          "var txt=document.getElementById('progressText');"
-          "document.getElementById('uploadFields').style.display='none';"
-          "btn.disabled=true;"
-          "wrap.style.display='block';fill.style.width='0%';"
-          "txt.textContent='Starting upload...';"
-          "var xhr=new XMLHttpRequest();"
-          "xhr.upload.addEventListener('progress',function(ev){"
-            "if(ev.lengthComputable){"
-              "var p=Math.round(ev.loaded/ev.total*100);"
-              "fill.style.width=p+'%';"
-              "txt.textContent=p<100?'Uploading... '+p+'%':'Installing...';"
-            "}"
-          "});"
-          "xhr.addEventListener('load',function(){"
-            "if(xhr.status==200){"
-              "txt.textContent='Installation complete, rebooting...';"
-              "fill.style.width='100%';"
-              "setTimeout(function(){"
-                "(function poll(){"
-                  "fetch('/').then(function(){window.location.href='/';})"
-                  ".catch(function(){setTimeout(poll,2000);});"
-                "})();"
-              "},6000);"
-            "}else if(xhr.status==403){"
-              "txt.textContent='Error: invalid session. Reload and try again.';"
-              "btn.disabled=false;"
-            "}else{"
-              "txt.textContent='Error: '+xhr.status;"
-              "btn.disabled=false;"
-            "}"
-          "});"
-          "xhr.addEventListener('error',function(){"
-            "var w=parseInt(fill.style.width)||0;"
-            "if(w>=100){"
-              "txt.textContent='Installation complete, rebooting...';"
-            "}else{"
-              "txt.textContent='Upload failed. Check connection.';"
-              "btn.disabled=false;"
-            "}"
-          "});"
+        "(function(){"
+          "function startPoll(){"
+            "setTimeout(function(){"
+              "(function poll(){"
+                "fetch('/').then(function(){window.location.href='/';})"
+                ".catch(function(){setTimeout(poll,2000);});"
+              "})();"
+            "},6000);"
+          "}"
+          "document.getElementById('uploadForm').addEventListener('submit',function(e){"
+            "e.preventDefault();"
+            "var btn=document.getElementById('uploadBtn');"
+            "var wrap=document.getElementById('progressWrap');"
+            "var fill=document.getElementById('progressFill');"
+            "var txt=document.getElementById('progressText');"
+            "document.getElementById('uploadFields').style.display='none';"
+            "btn.disabled=true;"
+            "wrap.style.display='block';fill.style.width='0%';"
+            "txt.textContent='Starting upload...';"
+            "var xhr=new XMLHttpRequest();"
+            "xhr.upload.addEventListener('progress',function(ev){"
+              "if(ev.lengthComputable){"
+                "var p=Math.round(ev.loaded/ev.total*100);"
+                "fill.style.width=p+'%';"
+                "txt.textContent=p<100?'Uploading... '+p+'%':'Installing...';"
+              "}"
+            "});"
+            "xhr.addEventListener('load',function(){"
+              "if(xhr.status==200){"
+                "txt.textContent='Installation complete, rebooting...';"
+                "fill.style.width='100%';"
+                "startPoll();"
+              "}else if(xhr.status==403){"
+                "txt.textContent='Error: invalid session. Reload and try again.';"
+                "btn.disabled=false;"
+              "}else{"
+                "txt.textContent='Error: '+xhr.status;"
+                "btn.disabled=false;"
+              "}"
+            "});"
+            "xhr.addEventListener('error',function(){"
+              "var w=parseInt(fill.style.width)||0;"
+              "if(w>=100){"
+                "txt.textContent='Installation complete, rebooting...';"
+                "fill.style.width='100%';"
+                "startPoll();"
+              "}else{"
+                "txt.textContent='Upload failed. Check connection.';"
+                "btn.disabled=false;"
+              "}"
+            "});"
           "xhr.open('POST','/update');"
           "xhr.send(new FormData(document.getElementById('uploadForm')));"
         "});"
@@ -582,11 +603,12 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
   }, [config](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
     static mbedtls_sha256_context shaCtx;
     static String expectedSha256;
-    if (!index && !validateCsrf(request)) { request->send(403); return; }
-    if (!adminAuth(request, config)) return;
-
-    dbg("[webserver] OTA progress ");dbgln(index);
+    static bool otaAuthenticated = false;
     if (!index) {
+      otaAuthenticated = false;
+      if (!validateCsrf(request)) { request->send(403); return; }
+      if (!adminAuth(request, config)) return;
+      otaAuthenticated = true;
       expectedSha256 = "";
       int cmd = (filename == "filesystem") ? U_SPIFFS : U_FLASH;
       if (request->hasParam("sha256", true)) {
@@ -597,11 +619,13 @@ void setupPages(AsyncWebServer *server, ModbusClientRTU *rtu, ModbusBridgeWiFi *
           mbedtls_sha256_starts_ret(&shaCtx, 0);
         }
       }
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) { // Start with max available size
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
         Update.printError(Serial);
         return request->send(400, "text/plain", "OTA could not begin");
       }
     }
+    if (!otaAuthenticated) { request->send(403); return; }
+    dbg("[webserver] OTA progress ");dbgln(index);
     // Write chunked data to the free sketch space
     if(len){
       if (Update.write(data, len) != len) {
@@ -795,7 +819,7 @@ void sendTableRow(AsyncResponseStream *response, const char *name, String value)
       "<tr>"
         "<td>%s:</td>"
         "<td>%s</td>"
-      "</tr>", name, value.c_str());
+      "</tr>", name, htmlEscape(value).c_str());
 }
 
 void sendTableRow(AsyncResponseStream *response, const char *name, uint32_t value){
@@ -804,15 +828,6 @@ void sendTableRow(AsyncResponseStream *response, const char *name, uint32_t valu
         "<td>%s:</td>"
         "<td>%u</td>"
       "</tr>", name, value);
-}
-
-static String htmlEscape(const String& input) {
-    String s = input;
-    s.replace("&", "&amp;");
-    s.replace("\"", "&quot;");
-    s.replace("<", "&lt;");
-    s.replace(">", "&gt;");
-    return s;
 }
 
 void sendDebugForm(AsyncResponseStream *response, String slaveId, String reg, String function, String count){
